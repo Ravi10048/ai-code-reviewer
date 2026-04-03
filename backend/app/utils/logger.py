@@ -2,16 +2,39 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
 import structlog
 
-from app.config import settings
+from app.config import settings, PROJECT_ROOT
+
+# Log file path
+LOG_DIR = PROJECT_ROOT / "logs"
+LOG_FILE = LOG_DIR / "app.log"
 
 
 def setup_logging() -> None:
-    """Configure structured logging for the application."""
+    """Configure structured logging — writes to both console AND file."""
     log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
 
+    # Ensure logs directory exists
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Set up Python's standard logging to write to file
+    file_handler = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(logging.Formatter("%(message)s"))
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+
+    # Configure structlog
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -19,13 +42,11 @@ def setup_logging() -> None:
             structlog.processors.StackInfoRenderer(),
             structlog.dev.set_exc_info,
             structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer()
-            if sys.stderr.isatty()
-            else structlog.processors.JSONRenderer(),
+            structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 

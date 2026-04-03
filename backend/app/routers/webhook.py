@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Header, Request
+from fastapi.responses import JSONResponse
 
 from app.exceptions import WebhookValidationError
 from app.webhook.validator import verify_webhook_signature
@@ -26,11 +27,11 @@ async def github_webhook(
         verify_webhook_signature(body, x_hub_signature_256)
     except WebhookValidationError as e:
         logger.warning("webhook_signature_invalid")
-        return {"error": e.message}, 403
+        return JSONResponse(status_code=403, content={"error": e.message})
 
     payload = await request.json()
 
-    logger.info("webhook_received", event=x_github_event)
+    logger.info("webhook_received", github_event=x_github_event)
 
     # Route to appropriate handler
     if x_github_event == "pull_request":

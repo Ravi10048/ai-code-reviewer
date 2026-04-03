@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
+from app.config import settings
 from app.db.database import get_db_context
 from app.db import repository as repo_db
 from app.github.client import GitHubClient
@@ -115,7 +116,8 @@ async def _run_review(
     review_id = None
 
     try:
-        # 1. Ensure repo exists in DB
+        # Step 1/10: Ensure repo exists in DB
+        logger.info("[1/10] saving_repo_to_db", repo=repo_full_name)
         with get_db_context() as db:
             repo = repo_db.get_or_create_repo(
                 db=db,
@@ -126,7 +128,8 @@ async def _run_review(
                 installation_id=installation_id,
             )
 
-            # 2. Create review record
+            # Step 2/10: Create review record
+            logger.info("[2/10] creating_review_record", repo=repo_full_name, pr=pr_number)
             review = repo_db.create_review(
                 db=db,
                 repo_id=repo.id,
@@ -138,7 +141,8 @@ async def _run_review(
             )
             review_id = review.id
 
-        # 3. Fetch PR diff (blocking GitHub API call)
+        # Step 3/10: Fetch PR diff from GitHub
+        logger.info("[3/10] fetching_pr_diff", repo=repo_full_name, pr=pr_number)
         loop = asyncio.get_event_loop()
         gh_client = GitHubClient(installation_id)
         file_diffs = await loop.run_in_executor(
@@ -147,16 +151,21 @@ async def _run_review(
             repo_full_name,
             pr_number,
         )
+        logger.info("[3/10] diff_fetched", files_count=len(file_diffs), total_additions=sum(f.additions for f in file_diffs), total_deletions=sum(f.deletions for f in file_diffs))
 
-        # 4. Update status to in_progress
+        # Step 4/10: Update status to in_progress
+        logger.info("[4/10] status_in_progress", review_id=review_id)
         with get_db_context() as db:
             repo_db.update_review_status(db, review_id, status="in_progress")
 
-        # 5. Run the AI review
+        # Step 5/10: Run the AI review
+        logger.info("[5/10] starting_ai_review", provider=settings.llm_provider.value, files=len(file_diffs))
         engine = ReviewEngine()
         result = await engine.review_pr(files=file_diffs, pr_title=pr_title)
+        logger.info("[5/10] ai_review_complete", total_issues=result.total_issues, critical=result.critical_count, warnings=result.warning_count, suggestions=result.suggestion_count, quality=result.overall_quality)
 
-        # 6. Save issues to DB
+        # Step 6/10: Save issues to DB
+        logger.info("[6/10] saving_issues_to_db", count=result.total_issues)
         with get_db_context() as db:
             issue_dicts = [
                 {
@@ -175,7 +184,8 @@ async def _run_review(
             ]
             db_issues = repo_db.create_issues(db, review_id, issue_dicts)
 
-        # 7. Post summary comment to GitHub
+        # Step 7/10: Post summary comment to GitHub
+        logger.info("[7/10] posting_summary_comment", repo=repo_full_name, pr=pr_number)
         await loop.run_in_executor(
             _executor,
             gh_client.post_review_summary,
@@ -184,7 +194,8 @@ async def _run_review(
             result,
         )
 
-        # 8. Post inline comments
+        # Step 8/10: Post inline comments
+        logger.info("[8/10] posting_inline_comments", total_issues=len(result.all_issues))
         posted_indices = await loop.run_in_executor(
             _executor,
             gh_client.post_inline_comments,
@@ -194,19 +205,22 @@ async def _run_review(
             head_sha,
             file_diffs,
         )
+        logger.info("[8/10] inline_comments_done", posted=len(posted_indices))
 
-        # 9. Mark posted issues in DB
+        # Step 9/10: Mark posted issues in DB
+        logger.info("[9/10] marking_posted_issues")
         with get_db_context() as db:
             for idx in posted_indices:
                 if idx < len(db_issues):
                     repo_db.mark_issue_posted(db, db_issues[idx].id)
 
-            # 10. Update review as completed
+            # Step 10/10: Update review as completed
+            logger.info("[10/10] finalizing_review", review_id=review_id)
             repo_db.update_review_status(
                 db,
                 review_id,
                 status="completed",
-                review_duration_ms=0,  # Engine tracks this internally
+                review_duration_ms=0,
                 llm_provider=engine.llm.provider_name,
                 model_used=engine.llm.model_name,
                 total_tokens_used=engine.total_tokens,
@@ -219,6 +233,9 @@ async def _run_review(
             repo=repo_full_name,
             pr=pr_number,
             issues=result.total_issues,
+            tokens_used=engine.total_tokens,
+            provider=engine.llm.provider_name,
+            model=engine.llm.model_name,
         )
 
     except Exception as e:
