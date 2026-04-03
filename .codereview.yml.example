@@ -1,0 +1,25 @@
+# .codereview.yml — Place this in your repo root to customize reviews
+
+# Minimum severity to post as inline comment
+# Options: critical, warning, suggestion
+min_severity: warning
+
+# File patterns to skip (glob patterns)
+ignore:
+  - "*.lock"
+  - "*.min.js"
+  - "dist/**"
+  - "node_modules/**"
+  - "vendor/**"
+  - "**/*.generated.ts"
+
+# Categories to check (remove to skip)
+categories:
+  - bug
+  - security
+  - performance
+  - style
+  - error_handling
+
+# Maximum files to review per PR (0 = unlimited)
+max_files: 50
