@@ -45,6 +45,111 @@ AI-powered code review bot for GitHub Pull Requests. Installs as a GitHub App, a
                                     └─────────────┘
 ```
 
+## Code Flow (Step-by-Step)
+
+This explains how a single PR review flows through the entire codebase, from webhook to GitHub comment.
+
+### Step 1: GitHub Sends Webhook → `webhook/handler.py`
+```
+Developer opens PR on GitHub
+  → GitHub sends POST /webhook/github with PR payload
+  → FastAPI receives it in routers/webhook.py
+  → Verifies signature (webhook/validator.py) using HMAC-SHA256
+  → Routes to handle_pull_request_event()
+  → Only triggers on: "opened", "synchronize", "reopened"
+  → Responds immediately with {"status": "review_queued"}
+  → Spawns background task: _run_review()
+```
+
+### Step 2: Authenticate with GitHub → `github/auth.py`
+```
+_run_review() needs to read the PR diff and post comments
+  → Generates JWT token from App's private key (.pem file)
+  → Exchanges JWT for installation access token (valid 1 hour)
+  → Tokens are cached to avoid re-generating on every call
+  → Returns authenticated PyGithub client
+```
+
+### Step 3: Fetch & Parse PR Diff → `github/diff_parser.py`
+```
+GitHubClient.get_pr_diff() fetches all changed files
+  → For each file, reconstructs unified diff format
+  → parse_diff() splits into FileDiff objects, each containing:
+      - file_path, language, status (added/modified/deleted)
+      - DiffHunk objects with line-by-line changes
+      - Each DiffLine tracks: content, old_line_number, new_line_number, type
+  → filter_reviewable_files() removes:
+      - Lock files, minified JS, node_modules, binaries
+      - Sorts by most changes first
+      - Respects max_files_per_review limit
+```
+
+### Step 4: AI Review Engine → `review/engine.py`
+```
+ReviewEngine.review_pr() orchestrates the review:
+  → For EACH file:
+      1. Builds language-specific prompt (review/prompts.py)
+         - System prompt: severity rules, categories, confidence threshold
+         - File prompt: diff content + language-specific checks
+         - Python: mutable defaults, missing await, bare except
+         - JavaScript: == vs ===, missing await, XSS risks
+      2. Sends to LLM via provider (llm/factory.py → groq or ollama)
+      3. Parses JSON response into ReviewIssue objects
+      4. Validates line numbers against actual diff (anti-hallucination)
+      5. Filters issues below 70% confidence
+  → After all files reviewed:
+      - Generates PR-level summary via separate LLM call
+      - Returns FullReviewResult with all issues + summary
+```
+
+### Step 5: LLM Provider Layer → `llm/groq_provider.py` or `llm/ollama_provider.py`
+```
+Factory pattern selects provider based on LLM_PROVIDER env var:
+  → GroqProvider: calls Groq API (free, cloud-hosted Llama/DeepSeek)
+      - Rate limiter: 28 requests/minute token bucket
+      - Auto-retry with exponential backoff on rate limits
+      - Structured JSON output via response_format
+  → OllamaProvider: calls local Ollama server
+      - No rate limits, full privacy
+      - Configurable model and timeout (300s for slow models)
+  → Both return standardized LLMResponse (content, tokens, model info)
+```
+
+### Step 6: Post Results to GitHub → `github/client.py`
+```
+Two types of comments posted:
+  1. Summary Comment (PR-level):
+     - Markdown table with severity counts
+     - Key issues list with file:line references
+     - Overall quality assessment (good/acceptable/needs_work/critical)
+     - Posted via pr.create_issue_comment()
+
+  2. Inline Comments (line-level):
+     - Only for issues meeting min_severity threshold
+     - Maps issue line_number → diff hunk (required by GitHub API)
+     - Shows: severity badge, category, description, suggestion, code snippet
+     - Posted via pr.create_review_comment() with exact line + commit SHA
+```
+
+### Step 7: Save to Database → `db/repository.py`
+```
+All results persisted to SQLite:
+  → Review record: repo, PR number, title, author, status, duration, model used
+  → Issue records: file, line, severity, category, description, confidence
+  → Analytics queries: aggregated by severity, category, daily counts, top repos
+  → Dashboard reads from these tables via REST API
+```
+
+### Step 8: Dashboard Displays Results → `frontend/`
+```
+React app calls /api/reviews, /api/analytics/summary:
+  → Dashboard: stats cards (total reviews, issues, avg duration)
+  → Reviews List: paginated table with severity badges
+  → Review Detail: expandable issue cards grouped by file
+  → Analytics: line chart (over time), pie chart (severity), bar chart (category)
+  → Settings: switch LLM provider/model, configure thresholds
+```
+
 ## Features
 
 - **Automatic PR Reviews** — Triggered on PR open, push, or reopen
