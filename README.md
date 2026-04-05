@@ -5,13 +5,13 @@ AI-powered code review bot for GitHub Pull Requests. Installs as a GitHub App, a
 ## Demo
 
 ### Bot automatically reviews PRs and posts comments
-![PR Review](docs/pr-review.png.jpeg)
+![PR Review](docs/pr-review.jpeg)
 
 ### Detailed issue breakdown with severity and suggestions
 ![Inline Comments](docs/inline-comment.jpeg)
 
 ### Web dashboard to track all reviews
-![Dashboard](docs/dashboard.png.jpeg)
+![Dashboard](docs/dashboard.jpeg)
 
 ### Review detail with expandable issues
 ![Review Detail](docs/review-detail1.jpeg)
